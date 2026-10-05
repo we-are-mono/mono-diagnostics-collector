@@ -1,0 +1,1 @@
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/d -H 'Content-Type: application/json' -H 'X-Diag-Token: SuperSecretKey' -d '{"uniqueId":"sf9a8sef98ef","timestamp":"2025-10-05T19:00:00Z","temperatures":{"cpu-temp":61.2,"temp1":42.0,"temp2":43.5},"voltages":{"vcore":1.2,"vddr":1.35},"currents":{"i_cpu":12.4,"i_gpu":5.1}}'
