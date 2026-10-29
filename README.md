@@ -8,10 +8,30 @@ as a line to a JSONL file. Every request must carry a shared secret token.
 Send any valid JSON value. The collector wraps it in one line:
 
 ```
-{"received_at":"2025-10-05T19:00:00Z","data":{"uniqueId":"aefc987fa","temperatures":{"cpu-temp":61.2}}}
+{"received_at":"2025-10-05T19:00:00Z","data":{"deviceId":"aa:bb:cc:dd:ee:ff","temperatures":{"cpu-temp":61.2}}}
 ```
 
 One line per request. The body limit is 64 KB.
+
+## Device ID
+
+The logger sends the raw `eth0` MAC address as a JSON string field named
+`deviceId`. The logger runs only on OpenWrt, so `eth0` is assumed to exist. The
+value is read once at startup and reused in every payload.
+
+Example value: `aa:bb:cc:dd:ee:ff`.
+
+Rules:
+
+- Source: the contents of `/sys/class/net/eth0/address`. The kernel prints
+  lowercase hex with colons. Command substitution drops the trailing newline.
+- Read once at startup. Every payload carries the same value.
+- Missing or empty file: the logger exits with code 1. It does not send a
+  placeholder ID.
+- Lab override: set `DEVICE_ID` in the environment. The default stays the file
+  read.
+- Change the MAC on `eth0` (for example in `/etc/config/network`) and the device
+  gets a new ID.
 
 ## Usage
 
@@ -30,7 +50,7 @@ Send a reading:
 ```
 curl -sS -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/d \
   -H 'X-Diag-Token: secret' -H 'Content-Type: application/json' \
-  -d '{"uniqueId":"aefc987fa","temperatures":{"cpu-temp":61.2},"voltages":{"vcore":1.2}}'
+  -d '{"deviceId":"aa:bb:cc:dd:ee:ff","temperatures":{"cpu-temp":61.2},"voltages":{"vcore":1.2}}'
 ```
 
 A successful send returns `204`. Build the binary with `make build`.

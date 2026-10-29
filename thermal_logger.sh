@@ -1,4 +1,3 @@
-```sh
 #!/bin/sh
 # Read Mono Gateway sensors and output JSONL or send readings to a host.
 #
@@ -11,14 +10,16 @@
 #   HOST=192.168.1.10:9999
 #   DIAG_TOKEN=your-shared-secret
 #   INTERVAL=1
+#   DEVICE_ID=aa:bb:cc:dd:ee:ff   # override the eth0 MAC read
 #
 # HTTP mode expects mono-diagnostics-collector:
 #   POST http://HOST/d
 #   Header: X-Diag-Token: DIAG_TOKEN
 #   Content-Type: application/json
 #
-# Each JSONL record contains a UTC timestamp and all sensor readings.
-# Unavailable or invalid readings are represented as JSON null.
+# Each JSONL record contains the deviceId (the raw eth0 MAC address), a UTC
+# timestamp, and all sensor readings. Unavailable or invalid readings are
+# represented as JSON null.
 
 HOST=${HOST:-192.168.1.10:9999}
 INTERVAL=${INTERVAL:-1}
@@ -51,6 +52,19 @@ fi
 
 if [ "$PRINT_ONLY" -eq 0 ] && [ -z "$DIAG_TOKEN" ]; then
   echo "Error: DIAG_TOKEN is required for HTTP mode" >&2
+  exit 1
+fi
+
+# Device ID: the raw eth0 MAC address. The logger runs only on OpenWrt.
+# Read it once at startup so every payload carries the same value.
+# DEVICE_ID in the environment overrides the file read.
+DEVICE_ID=${DEVICE_ID:-}
+if [ -z "$DEVICE_ID" ]; then
+  DEVICE_ID=$(cat /sys/class/net/eth0/address 2>/dev/null)
+fi
+
+if [ -z "$DEVICE_ID" ]; then
+  echo "Error: cannot read /sys/class/net/eth0/address" >&2
   exit 1
 fi
 
@@ -234,9 +248,11 @@ while :; do
   # Sysfs power value is in microwatts.
   usb_pd_w=$(to_watts "$(hwmon_value_by_label 'USB Power Delivery' power1_input)")
 
-  # Construct one JSON object. Every sensor reading is a JSON number or null.
+  # Construct one JSON object. The deviceId is a JSON string; every sensor
+  # reading is a JSON number or null.
   payload=$(printf \
-    '{"timestamp":"%s","ls1046a_ddr_controller_c":%s,"ls1046a_serdes_c":%s,"ls1046a_fman_c":%s,"ls1046a_a72_cluster_c":%s,"ls1046a_sec_c":%s,"gpy_u11000_c":%s,"gpy_u12000_c":%s,"gpy_u13000_c":%s,"tmp_u58000_local_c":%s,"tmp_u58000_remote_c":%s,"tmp_u58001_local_c":%s,"tmp_u58001_remote_c":%s,"sfp_p16000_c":%s,"sfp_p17000_c":%s,"fan1_rpm":%s,"fan1_pwm":%s,"usb_pd_w":%s}' \
+    '{"deviceId":"%s","timestamp":"%s","ls1046a_ddr_controller_c":%s,"ls1046a_serdes_c":%s,"ls1046a_fman_c":%s,"ls1046a_a72_cluster_c":%s,"ls1046a_sec_c":%s,"gpy_u11000_c":%s,"gpy_u12000_c":%s,"gpy_u13000_c":%s,"tmp_u58000_local_c":%s,"tmp_u58000_remote_c":%s,"tmp_u58001_local_c":%s,"tmp_u58001_remote_c":%s,"sfp_p16000_c":%s,"sfp_p17000_c":%s,"fan1_rpm":%s,"fan1_pwm":%s,"usb_pd_w":%s}' \
+    "$DEVICE_ID" \
     "$timestamp" \
     "$(json_number "$ddr")" \
     "$(json_number "$serdes")" \
@@ -273,4 +289,3 @@ while :; do
 
   sleep "$INTERVAL"
 done
-```
