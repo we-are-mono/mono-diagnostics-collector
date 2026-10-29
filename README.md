@@ -35,6 +35,33 @@ curl -sS -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/d \
 
 A successful send returns `204`. Build the binary with `make build`.
 
+## Run the collector and the logger in pair
+
+The collector stores the readings. The logger runs on the Mono Gateway and
+sends the readings to the collector. Start the collector first. Then start the
+logger.
+
+1. Start the collector on the host. Use port 8888 and listen on all interfaces,
+   so the gateway can reach it:
+
+```
+go run . -token SuperSecretKey -ip 0.0.0.0 -port 8888
+```
+
+2. Start the logger on the Mono Gateway. Point `HOST` to the host IP address and
+   to the collector port. Use the same token:
+
+```
+DIAG_TOKEN=SuperSecretKey HOST=192.168.99.201:8888 ./thermal_push.sh
+```
+
+The logger sends one reading each `INTERVAL` second. Each stored reading is one
+line in `diag.jsonl`. Replace `192.168.99.201` with the IP address of your host.
+
+Note: this repository holds the logger script as `thermal_logger.sh`. The
+gateway copy is named `thermal_push.sh`. Copy or rename the file before you run
+the command above.
+
 ## CLI parameters
 
 | Parameter | Default       | Description                                        |
