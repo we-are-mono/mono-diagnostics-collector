@@ -3,15 +3,19 @@ package main
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 )
 
-// The device page's charts: the hottest sensor per hour, and each temperature
-// sensor per hour, over the last 7 days, drawn as inline SVG. A small script
-// on the page shows the values under the pointer from the chart's data.
+// The device page's charts: the hottest sensor of each reading, and each
+// temperature sensor, over the last 7 days, drawn as inline SVG. A small
+// script on the page shows the values under the pointer from the chart's data.
 const (
 	chartHours  = 7 * 24
+	chartSpan   = chartHours * time.Hour
+	chartGap    = 45 * time.Minute // a longer gap between readings breaks a line
+	chartMin    = 30 * time.Minute // the shortest time span a chart shows
 	chartW      = 840
 	chartH      = 240
 	chartLeft   = 48.0 // room for the °C labels
@@ -21,84 +25,102 @@ const (
 	chartColors = 14            // series classes s0 .. s13 in the page's CSS
 )
 
-// chartStart returns the start of the first of the 7 days of hours that end
-// with the current hour.
+// chartStart returns the start of the charts' 7 days, which end now.
 func chartStart(now time.Time) time.Time {
-	return now.UTC().Truncate(time.Hour).Add(-(chartHours - 1) * time.Hour)
+	return now.Add(-chartSpan)
 }
 
-// hourIndex returns the chart hour that t falls in, and false when it is
-// outside the 7 days.
-func hourIndex(start, t time.Time) (int, bool) {
-	if t.Before(start) {
-		return 0, false
-	}
-	i := int(t.Sub(start) / time.Hour)
-	return i, i < chartHours
+// series is one line of a chart: a name and one value per reading.
+type series struct {
+	Name   string
+	Values []stat
 }
 
-// keepMax sets h to v when h has no value or a lower one.
-func keepMax(h *stat, v float64) {
-	if !h.OK || v > h.V {
-		*h = stat{v, true}
-	}
-}
-
-// hourly returns the start of the first hour and the device's hottest sensor
-// in each hour of the last 7 days, oldest first. The last hour is the current
-// one, so it may hold only part of an hour.
-func (s *store) hourly(id string, now time.Time) (time.Time, []stat) {
+// timeline returns the device's readings in the charts' 7 days, oldest first:
+// the time span the charts show, the reading times, the hottest sensor of each
+// reading, and one series for each temperature key with a value in them. The
+// span ends now and starts 7 days before; for a device with no older reading,
+// it starts at the first reading, so that a few readings spread over the
+// chart. It is at least chartMin long.
+func (s *store) timeline(id string, now time.Time) (from, to time.Time, times []time.Time, hottest []stat, sensors []series) {
 	start := chartStart(now)
-	hours := make([]stat, chartHours)
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	var points []point
+	older := false
 	for _, p := range s.devices[id] {
-		if i, in := hourIndex(start, p.at); in && p.ok {
-			keepMax(&hours[i], p.temp)
+		older = older || p.at.Before(start)
+		if !p.at.Before(start) && !p.at.After(now) {
+			points = append(points, p)
 		}
 	}
-	return start, hours
-}
+	sort.SliceStable(points, func(i, j int) bool { return points[i].at.Before(points[j].at) })
 
-// series is one line of a chart: a name and one value per hour.
-type series struct {
-	Name  string
-	Hours []stat
-}
-
-// sensorHours returns the start of the first hour and, for each temperature
-// key with a value in the last 7 days, the device's maximum in each hour.
-func (s *store) sensorHours(id string, now time.Time) (time.Time, []series) {
-	start := chartStart(now)
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	hours := make([][]stat, len(s.keys))
-	for _, p := range s.devices[id] {
-		i, in := hourIndex(start, p.at)
-		if !in {
-			continue
+	times = make([]time.Time, len(points))
+	hottest = make([]stat, len(points))
+	values := make([][]stat, len(s.keys))
+	for i, p := range points {
+		times[i] = p.at
+		if p.ok {
+			hottest[i] = stat{p.temp, true}
 		}
 		for k, key := range s.keys {
 			v, found := p.value(k)
 			if !found || !key.Temp() {
 				continue
 			}
-			if hours[k] == nil {
-				hours[k] = make([]stat, chartHours)
+			if values[k] == nil {
+				values[k] = make([]stat, len(points))
 			}
-			keepMax(&hours[k][i], v)
+			values[k][i] = stat{v, true}
 		}
 	}
 
-	var out []series
 	for k, key := range s.keys {
-		if hours[k] != nil {
-			out = append(out, series{key.Name, hours[k]})
+		if values[k] != nil {
+			sensors = append(sensors, series{key.Name, values[k]})
 		}
 	}
-	return start, out
+	from, to = start, now
+	if !older && len(times) > 0 && times[0].After(start) {
+		from = times[0]
+	}
+	if to.Sub(from) < chartMin {
+		from = to.Add(-chartMin)
+	}
+	return from, to, times, hottest, sensors
+}
+
+// tickSteps are the x axis label steps; the chart uses the shortest that
+// gives at most 8 steps over its span.
+var tickSteps = []time.Duration{
+	15 * time.Minute, 30 * time.Minute, time.Hour, 3 * time.Hour, 6 * time.Hour, 12 * time.Hour, 24 * time.Hour,
+}
+
+// timeTicks returns the x axis labels over from .. to in the time zone loc:
+// "15:04" on whole steps from midnight, and "Jan 2" at midnight.
+func timeTicks(from, to time.Time, loc *time.Location, x func(time.Time) float64) []chartTick {
+	step := tickSteps[len(tickSteps)-1]
+	for _, s := range tickSteps {
+		if to.Sub(from)/s <= 8 {
+			step = s
+			break
+		}
+	}
+	day := from.In(loc)
+	var ticks []chartTick
+	for at := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, loc); !at.After(to); at = at.Add(step) {
+		if at.Before(from) {
+			continue
+		}
+		label := at.Format("15:04")
+		if at.Hour() == 0 && at.Minute() == 0 {
+			label = at.Format("Jan 2")
+		}
+		ticks = append(ticks, chartTick{x(at), label})
+	}
+	return ticks
 }
 
 type chartTick struct {
@@ -106,14 +128,14 @@ type chartTick struct {
 	Label string
 }
 
-// chartDot marks a value that no line shows: no value in the hour before or
-// after it.
+// chartDot marks a value that no line shows: the reading before and the one
+// after it have no value, or are more than chartGap away.
 type chartDot struct {
 	X, Y float64
 }
 
 // chartSeries is one series laid out. Lines has one "x,y x,y ..." list per run
-// of hours with a value; an hour with no value breaks the line.
+// of readings with a value; a missing value or a gap breaks the line.
 type chartSeries struct {
 	Name  string
 	Class string // "s0" .. "s13" with several series; empty with one
@@ -130,16 +152,20 @@ type chart struct {
 	Data                     chartData
 }
 
-// chartData is the chart as the hover script reads it: the hour values of
-// each series (null for no value) and how to place them.
+// chartData is the chart as the hover script reads it: the reading times and
+// their labels, the values of each series at those times (null for no value),
+// and how to place them.
 type chartData struct {
-	Start  int64             `json:"start"` // the first hour, in Unix seconds
+	Start  int64             `json:"start"` // the time at Left, in Unix seconds
+	End    int64             `json:"end"`   // the time at Right
 	Left   float64           `json:"left"`
 	Right  float64           `json:"right"`
 	Top    float64           `json:"top"`
 	Bottom float64           `json:"bottom"`
 	Lo     float64           `json:"lo"` // the value at Bottom
 	Hi     float64           `json:"hi"` // the value at Top
+	Times  []int64           `json:"times"`
+	Labels []string          `json:"labels"` // the reading times, as the page shows them
 	Series []chartDataSeries `json:"series"`
 }
 
@@ -152,20 +178,21 @@ type chartDataSeries struct {
 // Legend reports whether the chart needs a legend (more than one series).
 func (c *chart) Legend() bool { return len(c.Series) > 1 }
 
-// newChart lays out the series over hours from start. It returns nil when no
-// hour has a value.
-func newChart(start time.Time, ss []series) *chart {
+// newChart lays out the series over the span from .. to; each series has one
+// value per reading time. Labels use the time zone loc. It returns nil when no
+// reading has a value.
+func newChart(from, to time.Time, times []time.Time, ss []series, loc *time.Location) *chart {
 	lo, hi, found := 0.0, 0.0, false
 	for _, s := range ss {
-		for _, h := range s.Hours {
-			if !h.OK {
+		for _, v := range s.Values {
+			if !v.OK {
 				continue
 			}
-			if !found || h.V < lo {
-				lo = h.V
+			if !found || v.V < lo {
+				lo = v.V
 			}
-			if !found || h.V > hi {
-				hi = h.V
+			if !found || v.V > hi {
+				hi = v.V
 			}
 			found = true
 		}
@@ -189,47 +216,57 @@ func newChart(start time.Time, ss []series) *chart {
 	}
 
 	c := &chart{W: chartW, H: chartH, Left: chartLeft, Right: chartRight, Top: chartTop, Bottom: chartBot}
-	c.Data = chartData{Start: start.Unix(), Left: chartLeft, Right: chartRight, Top: chartTop, Bottom: chartBot,
-		Lo: bottom, Hi: top}
-	x := func(i int) float64 {
-		return round1(chartLeft + float64(i)*(chartRight-chartLeft)/float64(chartHours-1))
+	c.Data = chartData{Start: from.Unix(), End: to.Unix(), Left: chartLeft, Right: chartRight,
+		Top: chartTop, Bottom: chartBot, Lo: bottom, Hi: top,
+		Times: make([]int64, len(times)), Labels: make([]string, len(times))}
+	for i, t := range times {
+		c.Data.Times[i] = t.Unix()
+		c.Data.Labels[i] = t.In(loc).Format("Jan 2 15:04 MST")
+	}
+	x := func(t time.Time) float64 {
+		return round1(chartLeft + float64(t.Sub(from))/float64(to.Sub(from))*(chartRight-chartLeft))
 	}
 	y := func(v float64) float64 { return round1(chartBot - (v-bottom)/(top-bottom)*(chartBot-chartTop)) }
 
 	for v := bottom; v <= top; v += step {
 		c.YTicks = append(c.YTicks, chartTick{y(v), fmt.Sprintf("%g °C", v)})
 	}
-	for i := range chartHours {
-		if at := start.Add(time.Duration(i) * time.Hour); at.Hour() == 0 {
-			c.XTicks = append(c.XTicks, chartTick{x(i), at.Format("Jan 2")})
-		}
-	}
+	c.XTicks = timeTicks(from, to, loc, x)
 
 	for n, s := range ss {
 		cs := chartSeries{Name: s.Name}
 		if len(ss) > 1 {
 			cs.Class = fmt.Sprintf("s%d", n%chartColors)
 		}
-		ds := chartDataSeries{Name: s.Name, Class: cs.Class, Values: make([]*float64, len(s.Hours))}
-		var run []string
-		for i, h := range s.Hours {
-			if !h.OK {
-				if len(run) > 1 {
-					cs.Lines = append(cs.Lines, strings.Join(run, " "))
+		ds := chartDataSeries{Name: s.Name, Class: cs.Class, Values: make([]*float64, len(s.Values))}
+
+		var run []chartDot
+		flush := func() {
+			switch {
+			case len(run) == 1:
+				cs.Dots = append(cs.Dots, run[0])
+			case len(run) > 1:
+				xy := make([]string, len(run))
+				for i, d := range run {
+					xy[i] = fmt.Sprintf("%g,%g", d.X, d.Y)
 				}
-				run = nil
+				cs.Lines = append(cs.Lines, strings.Join(xy, " "))
+			}
+			run = nil
+		}
+		for i, v := range s.Values {
+			if !v.OK {
+				flush()
 				continue
 			}
-			v := h.V
-			ds.Values[i] = &v
-			run = append(run, fmt.Sprintf("%g,%g", x(i), y(h.V)))
-			if (i == 0 || !s.Hours[i-1].OK) && (i == len(s.Hours)-1 || !s.Hours[i+1].OK) {
-				cs.Dots = append(cs.Dots, chartDot{x(i), y(h.V)})
+			value := v.V
+			ds.Values[i] = &value
+			if i > 0 && times[i].Sub(times[i-1]) > chartGap {
+				flush()
 			}
+			run = append(run, chartDot{x(times[i]), y(v.V)})
 		}
-		if len(run) > 1 {
-			cs.Lines = append(cs.Lines, strings.Join(run, " "))
-		}
+		flush()
 		c.Series = append(c.Series, cs)
 		c.Data.Series = append(c.Data.Series, ds)
 	}

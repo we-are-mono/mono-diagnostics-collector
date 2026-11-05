@@ -137,7 +137,7 @@ func main() {
 		go func() {
 			ds := &http.Server{
 				Addr:              *dash,
-				Handler:           dashboard(st, time.Now),
+				Handler:           dashboard(st, time.Now, time.Local),
 				ReadHeaderTimeout: 5 * time.Second,
 				WriteTimeout:      10 * time.Second,
 				IdleTimeout:       60 * time.Second,

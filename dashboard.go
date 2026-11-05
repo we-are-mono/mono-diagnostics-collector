@@ -25,10 +25,21 @@ type dashPage struct {
 	Rows        []row
 	Windows     []window
 	Now         time.Time
+	Loc         *time.Location // the time zone of every time on the page
 }
 
-// dashboard serves the overview at "/" and one device at "/?device=<id>".
-func dashboard(s *store, now func() time.Time) http.Handler {
+// Zone returns the time zone's name now, as in "CET".
+func (p dashPage) Zone() string { return p.Now.In(p.Loc).Format("MST") }
+
+// Stamp formats a time in full, for a title.
+func (p dashPage) Stamp(t time.Time) string { return t.In(p.Loc).Format("2006-01-02 15:04:05 MST") }
+
+// Clock formats a reading time for the table.
+func (p dashPage) Clock(t time.Time) string { return t.In(p.Loc).Format("Jan 2 15:04") }
+
+// dashboard serves the overview at "/" and one device at "/?device=<id>". It
+// shows times in the time zone loc.
+func dashboard(s *store, now func() time.Time, loc *time.Location) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -39,7 +50,7 @@ func dashboard(s *store, now func() time.Time) http.Handler {
 			return
 		}
 
-		p := dashPage{Windows: windows, Now: now()}
+		p := dashPage{Windows: windows, Now: now(), Loc: loc}
 		if id := r.URL.Query().Get("device"); id != "" {
 			sum, found := s.device(id, p.Now)
 			if !found {
@@ -47,14 +58,13 @@ func dashboard(s *store, now func() time.Time) http.Handler {
 				return
 			}
 			p.Device, p.Short, p.Sum = id, shortID(id), sum
-			start, hottest := s.hourly(id, p.Now)
-			p.Chart = newChart(start, []series{{"Hottest sensor", hottest}})
-			start, sensors := s.sensorHours(id, p.Now)
+			from, to, times, hottest, sensors := s.timeline(id, p.Now)
+			p.Chart = newChart(from, to, times, []series{{"Hottest sensor", hottest}}, loc)
 			for i := range sensors {
 				sensors[i].Name = displayName(sensors[i].Name)
 			}
-			p.SensorChart = newChart(start, sensors)
-			p.Keys, p.Rows = s.readings(id, start)
+			p.SensorChart = newChart(from, to, times, sensors, loc)
+			p.Keys, p.Rows = s.readings(id, chartStart(p.Now))
 		} else {
 			p.Sum, p.Cards = s.overview(p.Now)
 		}
@@ -132,7 +142,6 @@ var dashTemplate = template.Must(template.New("dash").Funcs(template.FuncMap{
 	"lower":      strings.ToLower,
 	"ago":        ago,
 	"quiet":      quiet,
-	"utc":        func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05 UTC") },
 	"first":      func(n int, s []stat) []stat { return s[:min(n, len(s))] },
 	"maxN":       func() int { return maxWindows },
 }).Parse(`<!doctype html>
@@ -246,13 +255,13 @@ thead th:first-child { z-index: 2; width: 7.5em; }
 <header><h1>Mono diagnostics</h1></header>
 {{- end}}
 <p class="note muted">{{if .Device}}Each temperature is the hottest sensor on this device.{{else}}Each temperature is the hottest sensor on a device. Averages are across devices.{{end}}</p>
-<p class="note muted">Times in UTC, as received by the collector. The page reloads every 5 minutes.</p>
+<p class="note muted">Times in {{.Zone}}, as received by the collector. The page reloads every 5 minutes.</p>
 
 <h2>{{if .Device}}Stats{{else}}Combined stats{{end}}</h2>
 <div class="tiles">
 {{- if .Device}}
   <div class="tile"><span class="label">Readings, last 24 h</span><span class="value">{{.Sum.Readings24h}}</span></div>
-  <div class="tile" title="{{utc .Sum.LastSeen}}"><span class="label">Last reading</span><span class="value">{{ago .Sum.LastSeen .Now}}</span></div>
+  <div class="tile" title="{{$.Stamp .Sum.LastSeen}}"><span class="label">Last reading</span><span class="value">{{ago .Sum.LastSeen .Now}}</span></div>
 {{- else}}
   <div class="tile"><span class="label">Devices, last 24 h</span><span class="value">{{.Sum.Devices24h}}</span><span class="sub">of {{.Sum.Devices}} in total</span></div>
 {{- range $i, $w := .Windows}}
@@ -270,12 +279,12 @@ thead th:first-child { z-index: 2; width: 7.5em; }
 {{- end}}
 </div>
 
-<h3>Hourly maximum, last 7 days</h3>
+<h3>Hottest sensor, last 7 days</h3>
 {{- with .Chart}}{{template "chart" .}}{{else}}
 <div class="empty">No temperatures in the last 7 days.</div>
 {{- end}}
 
-<h3>All temperature sensors, hourly maximum, last 7 days</h3>
+<h3>All temperature sensors, last 7 days</h3>
 {{- with .SensorChart}}{{template "chart" .}}{{else}}
 <div class="empty">No temperatures in the last 7 days.</div>
 {{- end}}
@@ -287,7 +296,7 @@ thead th:first-child { z-index: 2; width: 7.5em; }
 <thead><tr><th>Received</th>{{range .Keys}}<th class="mono" title="{{.Name}}">{{column .Name}}</th>{{end}}</tr></thead>
 <tbody>
 {{- range .Rows}}
-<tr><th title="{{utc .At}}">{{.At.UTC.Format "Jan 2 15:04"}}</th>{{range $i, $v := .Values}}<td>{{cell (index $.Keys $i) $v}}</td>{{end}}</tr>
+<tr><th title="{{$.Stamp .At}}">{{$.Clock .At}}</th>{{range $i, $v := .Values}}<td>{{cell (index $.Keys $i) $v}}</td>{{end}}</tr>
 {{- end}}
 </tbody>
 </table>
@@ -308,7 +317,7 @@ thead th:first-child { z-index: 2; width: 7.5em; }
       <dt>Max {{(index $.Windows $i).Label}}</dt><dd>{{temp $m}}</dd>
     {{- end}}
     </dl>
-    <span class="seen" title="{{utc .Sum.LastSeen}}">Last reading {{ago .Sum.LastSeen $.Now}}</span>
+    <span class="seen" title="{{$.Stamp .Sum.LastSeen}}">Last reading {{ago .Sum.LastSeen $.Now}}</span>
   </a>
 {{- end}}
 </div>
@@ -318,19 +327,17 @@ thead th:first-child { z-index: 2; width: 7.5em; }
 {{- end}}
 {{- if .Device}}
 <script>
-// Chart hover: under the pointer, a guide line, a dot on each line and a box
-// with the hour and each value, hottest first. The values come from the
+// Chart hover: at the reading nearest the pointer, a guide line, a dot on each
+// line and a box with the reading time and each value, hottest first. The values come from the
 // chart's JSON; the box is built with textContent only.
 (function () {
-  var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   var ns = "http://www.w3.org/2000/svg";
   document.querySelectorAll(".chart").forEach(function (box) {
     var src = box.querySelector("script.chart-data");
     var svg = box.querySelector("svg");
     if (!src || !svg) return;
     var d = JSON.parse(src.textContent);
-    var n = d.series[0].values.length;
-    var step = (d.right - d.left) / (n - 1);
+    function xOf(t) { return d.left + (t - d.start) / (d.end - d.start) * (d.right - d.left); }
 
     var guide = document.createElementNS(ns, "line");
     guide.setAttribute("class", "guide");
@@ -355,9 +362,14 @@ thead th:first-child { z-index: 2; width: 7.5em; }
       pt.x = e.clientX;
       pt.y = e.clientY;
       var p = pt.matrixTransform(svg.getScreenCTM().inverse());
-      var i = Math.round((p.x - d.left) / step);
-      if (i < 0 || i >= n) { hide(); return; }
-      var x = d.left + i * step;
+      // The nearest reading, if one is within 20 chart units (about 4 hours).
+      var i = -1, near = 20;
+      d.times.forEach(function (t, k) {
+        var dx = Math.abs(xOf(t) - p.x);
+        if (dx <= near) { near = dx; i = k; }
+      });
+      if (i < 0) { hide(); return; }
+      var x = xOf(d.times[i]);
 
       var rows = [];
       d.series.forEach(function (s, k) {
@@ -373,12 +385,10 @@ thead th:first-child { z-index: 2; width: 7.5em; }
       guide.setAttribute("x1", x);
       guide.setAttribute("x2", x);
 
-      var t = new Date((d.start + i * 3600) * 1000);
       tip.textContent = "";
       var head = document.createElement("div");
       head.className = "tip-head";
-      head.textContent = months[t.getUTCMonth()] + " " + t.getUTCDate() + " " +
-        String(t.getUTCHours()).padStart(2, "0") + ":00 UTC";
+      head.textContent = d.labels[i];
       tip.appendChild(head);
       rows.forEach(function (r) {
         var row = document.createElement("div");
@@ -409,7 +419,7 @@ thead th:first-child { z-index: 2; width: 7.5em; }
 </html>
 {{- define "chart"}}
 <div class="chart{{if .Legend}} multi{{end}}">
-<svg viewBox="0 0 {{.W}} {{.H}}" role="img" aria-label="Temperature per hour over the last 7 days">
+<svg viewBox="0 0 {{.W}} {{.H}}" role="img" aria-label="Temperature of each reading over the last 7 days">
 {{- $c := .}}
 {{- range .YTicks}}
   <line class="grid" x1="{{$c.Left}}" x2="{{$c.Right}}" y1="{{.Pos}}" y2="{{.Pos}}"/>

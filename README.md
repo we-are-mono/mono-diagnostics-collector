@@ -94,15 +94,23 @@ Click a card to see that device only. The device page shows:
 - its readings in the last 24 hours, its last reading, and its maximum over
   24 hours, 2 days, 7 days and all time (the average of one device's maximum
   is that maximum, so the device page shows no average);
-- a line chart of its maximum in each hour of the last 7 days;
-- a line chart with one line per temperature sensor (its maximum in each hour
-  of the last 7 days) and a legend;
+- a line chart of the hottest sensor of each reading in the last 7 days;
+- a line chart with one line per temperature sensor (its value in each
+  reading of the last 7 days) and a legend;
 - a table of all its readings in the last 7 days, newest first: one row per
   reading, one column per numeric key (temperatures, fan and power), as the
   router sent them. A dash means that the reading had no value.
 
-In the charts, an hour with no reading breaks the line. Point anywhere on a
-chart to see that hour's values, hottest first (a small script in the page).
+In the charts, each reading is one point at the time the collector received
+it. A line joins readings up to 45 minutes apart; a longer gap breaks it. The
+time axis ends now. It starts 7 days before, or, for a device with less than
+7 days of readings, at its first reading, so that a few readings do not crowd
+into a few pixels (at least 30 minutes). Point at a chart to see the nearest
+reading's values, hottest first (a small script in the page).
+
+The page shows all times in the time zone of the computer that runs the
+collector (for example CET), and names the zone under the title. Set `TZ` to
+use another zone, for example `TZ=UTC go run . ...`. The JSONL file keeps UTC.
 
 The page shortens sensor names. It drops `ls1046a_` and the `_c` at the end,
 and shows:

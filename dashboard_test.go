@@ -11,7 +11,7 @@ import (
 func get(t *testing.T, s *store, target string) (int, string) {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	dashboard(s, func() time.Time { return testNow }).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+	dashboard(s, func() time.Time { return testNow }, time.UTC).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
 	return rec.Code, rec.Body.String()
 }
 
