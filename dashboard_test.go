@@ -38,7 +38,7 @@ func TestDashboardOverview(t *testing.T) {
 		"Max 24 h</dt><dd>40.0 °C", "Max 7 days</dt><dd>60.0 °C",
 		"Last reading 1 h ago",
 		"Each temperature is the hottest sensor on a device. Averages are across devices.",
-		"Times in UTC, as received by the collector. The page reloads every 5 minutes.",
+		"Times in UTC, as received by the collector. The page updates when a reading comes in.",
 	)
 	if strings.Contains(body, "Viewing") || strings.Contains(body, "Max All time") {
 		t.Error("overview shows the device header or an all-time max")
@@ -109,7 +109,7 @@ func TestDashboardNotes(t *testing.T) {
 	} {
 		_, body := get(t, testStore(t), target)
 		mustContain(t, body, `<p class="note muted">`+first+`</p>
-<p class="note muted">Times in UTC, as received by the collector. The page reloads every 5 minutes.</p>`)
+<p class="note muted">Times in UTC, as received by the collector. The page updates when a reading comes in.</p>`)
 		if strings.Contains(body, "<footer") {
 			t.Errorf("%s: page still has a footer", target)
 		}

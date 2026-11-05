@@ -76,6 +76,7 @@ type store struct {
 	devices map[string][]point
 	keys    []sensorKey
 	index   map[string]int
+	events  hub // tells open dashboard pages about each new reading
 }
 
 func newStore() *store {
@@ -159,6 +160,7 @@ func (s *store) add(at time.Time, body []byte) bool {
 		}
 	}
 	s.devices[id] = append(s.devices[id], p)
+	s.events.publish(id)
 	return true
 }
 

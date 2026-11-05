@@ -3,7 +3,7 @@ IP     ?= 127.0.0.1
 PORT   ?= 8080
 OUT    ?= diag.jsonl
 TOKEN  ?= # required; set with TOKEN=secret
-CERT   ?= # optional; with KEY, serve HTTPS
+CERT   ?= # optional, for local tests; with KEY, serve HTTPS (production: nginx)
 KEY    ?=
 # Dashboard address (plain HTTP, no login); DASH= turns it off.
 DASH   ?= 127.0.0.1:8081

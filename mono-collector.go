@@ -31,8 +31,8 @@ func main() {
 	port := flag.Int("port", 8080, "listen port")
 	out := flag.String("out", "diag.jsonl", "output JSONL file")
 	token := flag.String("token", "", "shared secret required in the X-Diag-Token header")
-	cert := flag.String("cert", "", "TLS certificate file (PEM); with -key, serve HTTPS")
-	key := flag.String("key", "", "TLS private key file (PEM); with -cert, serve HTTPS")
+	cert := flag.String("cert", "", "TLS certificate file (PEM); with -key, serve HTTPS (for local tests; in production nginx serves HTTPS)")
+	key := flag.String("key", "", "TLS private key file (PEM); with -cert, serve HTTPS (for local tests)")
 	dash := flag.String("dash", "127.0.0.1:8081", "dashboard listen address (plain HTTP, no login); empty disables it")
 	flag.Parse()
 

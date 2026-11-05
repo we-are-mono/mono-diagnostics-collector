@@ -56,19 +56,55 @@ curl -sS -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/d \
 A successful send returns `204`. Build the binary with `make build`. Run the
 tests with `make test`.
 
-## Serve HTTPS
+## Deploy behind nginx
 
-The Verso plugin (`verso-plugin-diag`) sends only over HTTPS. Use a certificate
-that the routers' `ca-bundle` trusts (for example from Let's Encrypt), issued
-for the name in the plugin's `COLLECTOR_URL`:
+In production the collector runs on plain HTTP on `127.0.0.1` (the default),
+and nginx on the same machine serves HTTPS.
+[`nginx_example.conf`](nginx_example.conf) is a complete example:
+
+- `/d`: the routers' uploads, passed to `127.0.0.1:8080`;
+- `/` and `/events`: the dashboard, passed to `127.0.0.1:8081`, behind an nginx
+  login (HTTP basic auth, users in an `htpasswd` file).
+
+Start the collector with the defaults, without `-cert` and `-key`:
 
 ```
-go run . -token secret -ip 0.0.0.0 -port 443 \
-  -cert /etc/letsencrypt/live/diag.example.com/fullchain.pem \
-  -key /etc/letsencrypt/live/diag.example.com/privkey.pem
+TZ=Europe/Ljubljana mono-collector -token <token> -out /var/lib/mono-collector/diag.jsonl
 ```
 
-or `make run TOKEN=secret CERT=fullchain.pem KEY=privkey.pem`.
+Deployment notes:
+
+1. **Certificate:** the Verso plugin (`verso-plugin-diag`) sends only over
+   HTTPS and trusts only the routers' `ca-bundle`. Use a certificate from a
+   public CA (for example Let's Encrypt) for the name in the plugin's
+   `COLLECTOR_URL`, and build the plugin without `COLLECTOR_CA`.
+2. **No IP addresses:** keep `access_log off` for `/d`. The client note
+   (`CLIENT.md` in `verso-plugin-diag`) says that Mono does not store the IP
+   address that a reading comes from; nginx logs it by default. The error log
+   can still name a client address when a request fails (for example while
+   the collector is down), so keep error logs short-lived.
+3. **Dashboard login:** the dashboard has no login of its own and shows every
+   router's MAC address. Keep the `auth_basic` lines, or do not proxy it at all
+   and use an SSH tunnel (see Dashboard). It must stay at the root of its server
+   name: its links are absolute (`/`, `/events`, `/?device=...`).
+4. **Live update:** `/events` is one long response. nginx must not buffer it
+   (`proxy_buffering off`) and must keep it open (`proxy_read_timeout` above
+   the collector's 30-second ping). Without this, the page still reloads every
+   5 minutes, but not when a reading comes in.
+5. **Time zone:** the dashboard shows times in the server's time zone. A server
+   often runs on UTC; set `TZ` for the collector to show local time.
+
+### Local testing with HTTPS
+
+For local tests without nginx, the collector can serve HTTPS itself with
+`-cert` and `-key` (for example with a test CA that the router trusts through
+the plugin's `COLLECTOR_CA`):
+
+```
+go run . -token secret -ip 0.0.0.0 -port 8443 -cert srv.pem -key srv.key
+```
+
+or `make run TOKEN=secret IP=0.0.0.0 PORT=8443 CERT=srv.pem KEY=srv.key`.
 
 ## Dashboard
 
@@ -108,6 +144,11 @@ time axis ends now. It starts 7 days before, or, for a device with less than
 into a few pixels (at least 30 minutes). Point at a chart to see the nearest
 reading's values, hottest first (a small script in the page).
 
+The pages update by themselves: when the collector stores a reading, it tells
+the open pages over a Server-Sent Events stream (`/events`), and a page
+reloads. The overview reloads for a reading from any device, a device page
+only for a reading from that device. Every page also reloads every 5 minutes.
+
 The page shows all times in the time zone of the computer that runs the
 collector (for example CET), and names the zone under the title. Set `TZ` to
 use another zone, for example `TZ=UTC go run . ...`. The JSONL file keeps UTC.
@@ -140,8 +181,9 @@ reading is then added as it comes, so the dashboard needs no restart.
 
 The page uses the Catppuccin Mocha colors.
 
-The dashboard has no login and uses plain HTTP. Keep it on `127.0.0.1` and open
-it through an SSH tunnel from another computer:
+The dashboard has no login and uses plain HTTP. Keep it on `127.0.0.1`. Open it
+through nginx with a login (see Deploy behind nginx), or through an SSH tunnel
+from another computer:
 
 ```
 ssh -L 8081:127.0.0.1:8081 user@collector-host
@@ -184,12 +226,12 @@ the command above.
 | `-port`   | `8080`        | Listen port, range 1 to 65535.                     |
 | `-out`    | `diag.jsonl`  | Output JSONL file, opened in append mode.          |
 | `-token`  | none          | Required shared secret. Empty value stops startup. |
-| `-cert`   | none          | TLS certificate file (PEM). With `-key`, serve HTTPS. |
-| `-key`    | none          | TLS private key file (PEM). With `-cert`, serve HTTPS. |
+| `-cert`   | none          | TLS certificate file (PEM). With `-key`, serve HTTPS. For local tests; in production nginx serves HTTPS. |
+| `-key`    | none          | TLS private key file (PEM). With `-cert`, serve HTTPS. For local tests. |
 | `-dash`   | `127.0.0.1:8081` | Dashboard address, plain HTTP with no login. Empty value turns it off. |
 
-Give `-cert` and `-key` together, or neither. Without them the collector serves
-plain HTTP.
+Give `-cert` and `-key` together, or neither. Without them (the default, and
+the production setup behind nginx) the collector serves plain HTTP.
 
 The token is compared against the `X-Diag-Token` header. A missing or wrong
 token returns `401` and the request is not stored.

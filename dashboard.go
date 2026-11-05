@@ -37,9 +37,18 @@ func (p dashPage) Stamp(t time.Time) string { return t.In(p.Loc).Format("2006-01
 // Clock formats a reading time for the table.
 func (p dashPage) Clock(t time.Time) string { return t.In(p.Loc).Format("Jan 2 15:04") }
 
-// dashboard serves the overview at "/" and one device at "/?device=<id>". It
-// shows times in the time zone loc.
+// dashboard serves the overview at "/", one device at "/?device=<id>", and at
+// "/events" the stream that tells the pages to update. It shows times in the
+// time zone loc.
 func dashboard(s *store, now func() time.Time, loc *time.Location) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("GET /events", events(s))
+	mux.Handle("/", pages(s, now, loc))
+	return mux
+}
+
+// pages serves the overview and the device pages.
+func pages(s *store, now func() time.Time, loc *time.Location) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -255,7 +264,7 @@ thead th:first-child { z-index: 2; width: 7.5em; }
 <header><h1>Mono diagnostics</h1></header>
 {{- end}}
 <p class="note muted">{{if .Device}}Each temperature is the hottest sensor on this device.{{else}}Each temperature is the hottest sensor on a device. Averages are across devices.{{end}}</p>
-<p class="note muted">Times in {{.Zone}}, as received by the collector. The page reloads every 5 minutes.</p>
+<p class="note muted">Times in {{.Zone}}, as received by the collector. The page updates when a reading comes in.</p>
 
 <h2>{{if .Device}}Stats{{else}}Combined stats{{end}}</h2>
 <div class="tiles">
@@ -325,6 +334,22 @@ thead th:first-child { z-index: 2; width: 7.5em; }
 <div class="empty">No readings yet.</div>
 {{- end}}
 {{- end}}
+<script>
+// Live update: reload the page when the collector stores a reading, on the
+// overview from any device and on a device page from that device. The
+// 5-minute refresh in the head stays as a fallback.
+(function () {
+  if (!window.EventSource) return;
+  var device = {{.Device}};
+  var pending = false;
+  new EventSource("/events").addEventListener("reading", function (e) {
+    var id = JSON.parse(e.data);
+    if (pending || (device && id !== device)) return;
+    pending = true;
+    setTimeout(function () { location.reload(); }, 1000); // one reload for a burst
+  });
+})();
+</script>
 {{- if .Device}}
 <script>
 // Chart hover: at the reading nearest the pointer, a guide line, a dot on each
