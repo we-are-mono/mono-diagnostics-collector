@@ -31,6 +31,9 @@ func main() {
 	port := flag.Int("port", 8080, "listen port")
 	out := flag.String("out", "diag.jsonl", "output JSONL file")
 	token := flag.String("token", "", "shared secret required in the X-Diag-Token header")
+	cert := flag.String("cert", "", "TLS certificate file (PEM); with -key, serve HTTPS")
+	key := flag.String("key", "", "TLS private key file (PEM); with -cert, serve HTTPS")
+	dash := flag.String("dash", "127.0.0.1:8081", "dashboard listen address (plain HTTP, no login); empty disables it")
 	flag.Parse()
 
 	if *token == "" {
@@ -41,9 +44,31 @@ func main() {
 		log.Fatalf("invalid port: %d", *port)
 	}
 
+	if (*cert == "") != (*key == "") {
+		log.Fatal("-cert and -key must be given together")
+	}
+
+	if *dash != "" {
+		if _, _, err := net.SplitHostPort(*dash); err != nil {
+			log.Fatalf("invalid -dash address: %v", err)
+		}
+	}
+
 	f, err := os.OpenFile(*out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	st := newStore()
+	if in, err := os.Open(*out); err != nil {
+		log.Fatal(err)
+	} else {
+		kept, skipped, err := st.load(in)
+		in.Close()
+		if err != nil {
+			log.Fatalf("reading %s: %v", *out, err)
+		}
+		log.Printf("loaded %d readings from %s (%d lines skipped)", kept, *out, skipped)
 	}
 
 	mux := http.NewServeMux()
@@ -75,8 +100,9 @@ func main() {
 			return
 		}
 
+		now := time.Now().UTC().Truncate(time.Second)
 		line, err := json.Marshal(record{
-			ReceivedAt: time.Now().UTC().Format(time.RFC3339),
+			ReceivedAt: now.Format(time.RFC3339),
 			Data:       body,
 		})
 		if err != nil {
@@ -92,6 +118,7 @@ func main() {
 			http.Error(w, "write failed", http.StatusInternalServerError)
 			return
 		}
+		st.add(now, body)
 
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -106,8 +133,27 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	log.Printf("listening on %s, writing to %s", addr, *out)
-	err = srv.ListenAndServe()
+	if *dash != "" {
+		go func() {
+			ds := &http.Server{
+				Addr:              *dash,
+				Handler:           dashboard(st, time.Now),
+				ReadHeaderTimeout: 5 * time.Second,
+				WriteTimeout:      10 * time.Second,
+				IdleTimeout:       60 * time.Second,
+			}
+			log.Printf("dashboard on http://%s", *dash)
+			log.Fatal(ds.ListenAndServe())
+		}()
+	}
+
+	if *cert != "" {
+		log.Printf("listening on https://%s, writing to %s", addr, *out)
+		err = srv.ListenAndServeTLS(*cert, *key)
+	} else {
+		log.Printf("listening on http://%s, writing to %s", addr, *out)
+		err = srv.ListenAndServe()
+	}
 	f.Close()
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)

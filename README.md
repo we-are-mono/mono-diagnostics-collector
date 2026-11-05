@@ -53,7 +53,93 @@ curl -sS -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/d \
   -d '{"deviceId":"aa:bb:cc:dd:ee:ff","temperatures":{"cpu-temp":61.2},"voltages":{"vcore":1.2}}'
 ```
 
-A successful send returns `204`. Build the binary with `make build`.
+A successful send returns `204`. Build the binary with `make build`. Run the
+tests with `make test`.
+
+## Serve HTTPS
+
+The Verso plugin (`verso-plugin-diag`) sends only over HTTPS. Use a certificate
+that the routers' `ca-bundle` trusts (for example from Let's Encrypt), issued
+for the name in the plugin's `COLLECTOR_URL`:
+
+```
+go run . -token secret -ip 0.0.0.0 -port 443 \
+  -cert /etc/letsencrypt/live/diag.example.com/fullchain.pem \
+  -key /etc/letsencrypt/live/diag.example.com/privkey.pem
+```
+
+or `make run TOKEN=secret CERT=fullchain.pem KEY=privkey.pem`.
+
+## Dashboard
+
+The collector also serves a dashboard, by default on `http://127.0.0.1:8081`.
+It shows:
+
+- "Combined stats": the number of devices that sent a reading in the last 24
+  hours, and the average of the device maximums over the last 24 hours,
+  2 days, 7 days and all time;
+- a card for each device, with the last 3 bytes of its MAC address
+  (`00:17:df`), its maximum over 24 hours, 2 days and 7 days, and when its last
+  reading came. Cards of devices with no reading in 24 hours are dimmed.
+
+A device's maximum for a period is the highest value of all its temperature
+sensors (every key that ends in `_c`) over all its readings in that period.
+The average for a period is the mean of these maximums, one per device that
+sent a temperature in the period. Other keys (`fan1_rpm`, `usb_pd_w`) and
+`null` values are not temperatures.
+
+Click a card to see that device only. The device page shows:
+
+- "Viewing 00:17:df" and a button back to all devices;
+- its readings in the last 24 hours, its last reading, and its maximum over
+  24 hours, 2 days, 7 days and all time (the average of one device's maximum
+  is that maximum, so the device page shows no average);
+- a line chart of its maximum in each hour of the last 7 days;
+- a line chart with one line per temperature sensor (its maximum in each hour
+  of the last 7 days) and a legend;
+- a table of all its readings in the last 7 days, newest first: one row per
+  reading, one column per numeric key (temperatures, fan and power), as the
+  router sent them. A dash means that the reading had no value.
+
+In the charts, an hour with no reading breaks the line. Point anywhere on a
+chart to see that hour's values, hottest first (a small script in the page).
+
+The page shortens sensor names. It drops `ls1046a_` and the `_c` at the end,
+and shows:
+
+| Key | Name on the page |
+|---|---|
+| `ls1046a_ddr_controller_c` | `ddr_ctrl` |
+| `ls1046a_a72_cluster_c` | `cpu` |
+| `tmp_u58000_local_c`, `tmp_u58000_remote_c` | `tmp0_local`, `tmp0_remote` |
+| `tmp_u58001_local_c`, `tmp_u58001_remote_c` | `tmp1_local`, `tmp1_remote` |
+| `gpy_u11000_c`, `gpy_u12000_c`, `gpy_u13000_c` | `phy1`, `phy2`, `phy3` |
+| `sfp_p16000_c`, `sfp_p17000_c` | `sfp1`, `sfp2` |
+
+Point at a table column name to see the full key. The JSONL file keeps the
+full keys.
+
+The dashboard leaves out `tmp_u58001_remote_c` (`tmp1_remote`): that sensor
+is not connected on the Mono Gateway and always reads 0. It is in no chart,
+table or maximum. The JSONL file still has it.
+
+The periods use the time when the collector received each reading, not the
+router's clock.
+
+At startup the collector reads the whole `-out` file into memory: every
+numeric value of every reading (about 32 MB for 100 routers over a month). Each stored
+reading is then added as it comes, so the dashboard needs no restart.
+
+The page uses the Catppuccin Mocha colors.
+
+The dashboard has no login and uses plain HTTP. Keep it on `127.0.0.1` and open
+it through an SSH tunnel from another computer:
+
+```
+ssh -L 8081:127.0.0.1:8081 user@collector-host
+```
+
+Then open `http://localhost:8081`. Use `-dash ""` to turn the dashboard off.
 
 ## Run the collector and the logger in pair
 
@@ -90,6 +176,12 @@ the command above.
 | `-port`   | `8080`        | Listen port, range 1 to 65535.                     |
 | `-out`    | `diag.jsonl`  | Output JSONL file, opened in append mode.          |
 | `-token`  | none          | Required shared secret. Empty value stops startup. |
+| `-cert`   | none          | TLS certificate file (PEM). With `-key`, serve HTTPS. |
+| `-key`    | none          | TLS private key file (PEM). With `-cert`, serve HTTPS. |
+| `-dash`   | `127.0.0.1:8081` | Dashboard address, plain HTTP with no login. Empty value turns it off. |
+
+Give `-cert` and `-key` together, or neither. Without them the collector serves
+plain HTTP.
 
 The token is compared against the `X-Diag-Token` header. A missing or wrong
 token returns `401` and the request is not stored.
