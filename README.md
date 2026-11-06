@@ -56,6 +56,10 @@ curl -sS -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/d \
 A successful send returns `204`. Build the binary with `make build`. Run the
 tests with `make test`.
 
+`make build` builds for the computer that runs it. For the production server
+(Linux on x86-64), use `make build-prod`: it makes a static binary that needs
+no particular glibc version on the server.
+
 ## Deploy behind nginx
 
 In production the collector runs on plain HTTP on `127.0.0.1` (the default),
