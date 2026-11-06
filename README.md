@@ -73,8 +73,12 @@ and nginx on the same machine serves HTTPS.
 Start the collector with the defaults, without `-cert` and `-key`:
 
 ```
-TZ=Europe/Ljubljana mono-collector -token <token> -out /var/lib/mono-collector/diag.jsonl
+TZ=Europe/Ljubljana /srv/diag-collector/mono-collector -token <token> -out /srv/diag-collector/data/diag.jsonl
 ```
+
+On the server, the systemd service `diag-collector` runs this command as the
+system user `diag-collector`. The binary is `/srv/diag-collector/mono-collector`
+(owned by root) and the readings are in `/srv/diag-collector/data/`.
 
 Deployment notes:
 
@@ -97,6 +101,38 @@ Deployment notes:
    5 minutes, but not when a reading comes in.
 5. **Time zone:** the dashboard shows times in the server's time zone. A server
    often runs on UTC; set `TZ` for the collector to show local time.
+
+### Install a new version
+
+1. On your computer, build the binary for the server (static, Linux x86-64):
+
+   ```
+   make build-prod
+   ```
+
+2. Copy it to your home folder on the server:
+
+   ```
+   scp mono-collector user@collector-host:
+   ```
+
+3. On the server, replace the binary and restart the service:
+
+   ```
+   sudo install -m755 ~/mono-collector /srv/diag-collector/ && sudo systemctl restart diag-collector
+   ```
+
+4. Check that it runs. The first command prints `200`; the log shows
+   "loaded N readings":
+
+   ```
+   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/
+   sudo journalctl -u diag-collector -n 5
+   ```
+
+The readings in `/srv/diag-collector/data/` stay. At startup the collector
+reads them again. Uploads that come in during the restart (a few seconds) fail;
+the routers send again at their next interval.
 
 ### Local testing with HTTPS
 
